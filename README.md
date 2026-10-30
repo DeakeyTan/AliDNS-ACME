@@ -81,20 +81,62 @@ AliDNS: node.example.com -> 公网 VPS（现有 A 记录不变）
 ```
 
 第三方工具遵循各自的开源许可。部署前请审阅脚本和依赖。
-## 六、CentOS Stream / RHEL 系列
 
-仓库同时提供独立脚本 [setup_alidns_acme_for_hysteria2_centos.sh](./setup_alidns_acme_for_hysteria2_centos.sh)。支持 **CentOS Stream 9/10**，以及 **Rocky Linux、AlmaLinux、RHEL 8+**。不支持已经停止维护的 CentOS Linux 7/8 和 CentOS Stream 8。
+## 六、CentOS Linux 7 / CentOS Stream / RHEL 系列
 
-先安装 Hysteria2 官方 systemd 服务；然后在公网服务器以 root 身份执行：
+使用独立脚本：[setup_alidns_acme_for_hysteria2_centos.sh](./setup_alidns_acme_for_hysteria2_centos.sh)，不影响 Debian/Ubuntu 版本。
+
+| 发行版 | 此证书脚本支持情况 |
+| --- | --- |
+| CentOS Linux 7.9 | **兼容模式**（系统 EOL，需要输入 YES 确认） |
+| CentOS Stream 9 / 10 | 支持 |
+| Rocky Linux / AlmaLinux / RHEL 8+ | 支持 |
+| CentOS Linux 8、CentOS Stream 8 | 不支持（EOL） |
+
+**重要风险：** CentOS Linux 7 已于 2024-06-30 停止维护，没有常规安全更新。Hysteria2 官方也提醒 CentOS 7 旧内核可能导致 QUIC 连接超时。本脚本只管理 AliDNS DNS-01 证书，不修复 Linux 内核或保证 Hysteria2 在 CentOS 7 上可正常运行。公网 VPS 建议迁移到 Rocky Linux / AlmaLinux 9+。
+
+### 预先条件
+
+- 先安装并确认官方 `hysteria-server.service` 存在（`systemctl cat hysteria-server.service`）。
+- root 权限、可用的 `yum` 或 `dnf`、可访问的包仓库，和访问 GitHub、Let's Encrypt、AliDNS API 的网络。
+- 通过阿里云 RAM 创建独立的 AliDNS AccessKey，不要提交凭据到 GitHub。
+- CentOS 7 的默认 mirrorlist 已退役。如果 `yum install` 失败，需要自行**备份当前 `/etc/yum.repos.d/`，再将 CentOS 基础仓库切换至官方归档 `https://vault.centos.org/7.9.2009/`**。脚本不自动改写软件源，以免破坏已有服务和依赖。
+
+### 下载与安装
 
 ```bash
 sudo -i
-curl -fsSLo /root/setup_alidns_acme_for_hysteria2_centos.sh \\
+curl -fsSLo /root/setup_alidns_acme_for_hysteria2_centos.sh \
   https://raw.githubusercontent.com/DeakeyTan/AliDNS-ACME/main/setup_alidns_acme_for_hysteria2_centos.sh
+
 bash -n /root/setup_alidns_acme_for_hysteria2_centos.sh
 bash /root/setup_alidns_acme_for_hysteria2_centos.sh
 ```
 
-CentOS 版使用 `dnf` / `yum` 安装 `curl ca-certificates openssl cronie util-linux coreutils`，使用 `crond` 进行自动续期，并尝试通过 `restorecon` 恢复证书目录的 SELinux 默认上下文。证书仍安装于 `/etc/hysteria/certs/`，且保持与现有 NPS 和 Nginx 独立。
+在 CentOS 7 上会出现风险提示，输入大写 `YES` 后继续。脚本通过 `yum` 安装 `curl`、`ca-certificates`、`openssl`、`cronie` 等必要依赖，启用 `crond`，使用 AliDNS 完成 DNS-01 签发，并通过 acme.sh 保存自动续期的部署路径。
 
-**注意：** 脚本没有在真实 CentOS/RHEL 服务器进行端到端签发验证。若 SELinux 处于 Enforcing 模式，遇到服务无法读取证书的情况，需检查 `ausearch` 和 `ls -Z` 结果，不应通过关闭 SELinux 来绕过问题。AccessKey 会保存在 root 的 acme.sh 配置目录以支持无人值守续期。
+生产证书仍位于：
+
+```text
+/etc/hysteria/certs/fullchain.pem
+/etc/hysteria/certs/privkey.pem
+```
+
+CentOS 7 自带的 OpenSSL 1.0.2k 缺少新版本 `openssl x509 -ext` 选项。请使用兼容命令检查证书：
+
+```bash
+openssl x509 -in /etc/hysteria/certs/fullchain.pem -noout -subject -dates
+openssl x509 -in /etc/hysteria/certs/fullchain.pem -noout -text | grep -A1 'X509v3 Subject Alternative Name'
+crontab -l | grep acme.sh
+systemctl status crond
+uname -r
+```
+
+### 常见故障
+
+- **yum 失败**：检查旧版 CentOS 7 仓库是否仍使用已退役的镜像地址；迁移至 Vault 前先备份配置。
+- **acme.sh HTTPS/TLS 失败**：检查系统时钟、OpenSSL、CA 根证书和外网访问能力；不要用关闭 TLS 验证的方式绕过。
+- **证书签发成功、客户端 QUIC 握手仍失败**：检查 UDP 入站端口、防火墙、证书与密码，并重点核对 CentOS 7 的旧内核兼容问题；不应将其误判为 AliDNS 故障。
+- **SELinux Enforcing**：用 `ls -Z /etc/hysteria/certs/` 和 `ausearch -m avc -ts recent` 排查权限；不要直接禁用 SELinux。
+
+> 修改后的 CentOS 兼容脚本已做 Bash 语法和发行版识别模拟测试，但**尚未在真实 CentOS 7 服务器上完成 ACME 签发、续期及 Hysteria2 QUIC 联通的端到端验证**。
