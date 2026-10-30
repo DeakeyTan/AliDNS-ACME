@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AliDNS DNS-01 + Let's Encrypt via acme.sh for Hysteria2 on supported CentOS/RHEL-family hosts.
+# AliDNS DNS-01 + Let's Encrypt via acme.sh for Hysteria2 on CentOS 7 (EOL), CentOS Stream and RHEL-family hosts.
 # Certificate management only: does not edit NPS, Nginx, DNS A records, firewalls, or service ports.
 set -Eeuo pipefail
 umask 077
@@ -27,8 +27,14 @@ MAJOR="${OS_VERSION%%.*}"
 [[ "$MAJOR" =~ ^[0-9]+$ ]] || err "Unrecognized OS version: $OS_VERSION"
 case "$OS_ID" in
   centos)
-    if (( MAJOR < 9 || MAJOR > 10 )) || ! { [[ -r /etc/centos-release ]] && grep -qi 'CentOS Stream' /etc/centos-release; }; then
-      err 'Only CentOS Stream 9/10 are supported. CentOS Linux 7/8 and CentOS Stream 8 are EOL; migrate to a supported OS.'
+    if (( MAJOR == 7 )) && ! { [[ -r /etc/centos-release ]] && grep -qi 'CentOS Stream' /etc/centos-release; }; then
+      echo 'WARNING: CentOS Linux 7 reached EOL on June 30, 2024. No security updates are provided.' >&2
+      echo 'WARNING: The Hysteria2 project documents QUIC/old-kernel issues on CentOS 7.' >&2
+      echo 'This script configures ACME certificates only and does NOT guarantee Hysteria2 network compatibility.' >&2
+      read -r -p 'Continue on unsupported CentOS 7 (type YES)? ' EOL_CONFIRM
+      [[ "$EOL_CONFIRM" == YES ]] || err 'Cancelled. Migrate to Rocky Linux/AlmaLinux 9+ when possible.'
+    elif (( MAJOR < 9 || MAJOR > 10 )) || ! { [[ -r /etc/centos-release ]] && grep -qi 'CentOS Stream' /etc/centos-release; }; then
+      err 'Supported CentOS editions: CentOS Linux 7 (EOL; explicit acknowledgement) and CentOS Stream 9/10.'
     fi
     ;;
   rocky|almalinux|rhel)
@@ -39,7 +45,7 @@ esac
 command -v systemctl >/dev/null || err 'systemd is required.'
 systemctl cat hysteria-server.service >/dev/null 2>&1 || \
   err 'Install the official Hysteria2 service first: bash <(curl -fsSL https://get.hy2.sh/)'
-SERVICE_USER="$(systemctl show hysteria-server.service -p User --value 2>/dev/null || true)"
+SERVICE_USER="$(systemctl show -p User hysteria-server.service 2>/dev/null | sed -n 's/^User=//p' || true)"
 SERVICE_USER="${SERVICE_USER:-root}"
 id "$SERVICE_USER" >/dev/null 2>&1 || err "Hysteria service user does not exist: $SERVICE_USER"
 SERVICE_GROUP="$(id -gn "$SERVICE_USER")"
@@ -71,7 +77,12 @@ else
   err 'Neither dnf nor yum found.'
 fi
 printf '[1/4] Installing ACME dependencies via %s (no system upgrade)...\n' "$PM"
-"$PM" install -y curl ca-certificates openssl cronie util-linux coreutils
+if ! "$PM" install -y curl ca-certificates openssl cronie util-linux coreutils; then
+  if [[ "$OS_ID" == centos && "$MAJOR" == 7 ]]; then
+    err 'yum installation failed. CentOS 7 mirrorlist is retired; review /etc/yum.repos.d and configure the archived vault.centos.org/7.9.2009 repositories manually (back up old .repo files first). This script will not change your repository configuration.'
+  fi
+  err "$PM failed to install ACME dependencies. Fix the repository/network errors and rerun."
+fi
 systemctl enable --now crond.service
 
 ACME=/root/.acme.sh/acme.sh
@@ -125,7 +136,9 @@ runuser -u "$SERVICE_USER" -- test -r "$CERT_DIR/privkey.pem" || \
   err "Service user $SERVICE_USER cannot read the key; check permissions/SELinux."
 
 printf '\n=== Success: AliDNS certificate installed ===\n'
-openssl x509 -in "$CERT_DIR/fullchain.pem" -noout -subject -dates -ext subjectAltName
+openssl x509 -in "$CERT_DIR/fullchain.pem" -noout -subject -dates
+# OpenSSL 1.0.2k on CentOS 7 does not support the x509 -ext flag.
+openssl x509 -in "$CERT_DIR/fullchain.pem" -noout -text | grep -A1 'X509v3 Subject Alternative Name' || true
 printf '\nCertificate: %s/fullchain.pem\nPrivate key: %s/privkey.pem\nService user: %s\n' "$CERT_DIR" "$CERT_DIR" "$SERVICE_USER"
 printf '\nAdd to /etc/hysteria/config.yaml:\n'
 printf 'tls:\n  cert: %s/fullchain.pem\n  key: %s/privkey.pem\n  sniGuard: strict\n' "$CERT_DIR" "$CERT_DIR"
