@@ -81,3 +81,20 @@ AliDNS: node.example.com -> 公网 VPS（现有 A 记录不变）
 ```
 
 第三方工具遵循各自的开源许可。部署前请审阅脚本和依赖。
+## 六、CentOS Stream / RHEL 系列
+
+仓库同时提供独立脚本 [setup_alidns_acme_for_hysteria2_centos.sh](./setup_alidns_acme_for_hysteria2_centos.sh)。支持 **CentOS Stream 9/10**，以及 **Rocky Linux、AlmaLinux、RHEL 8+**。不支持已经停止维护的 CentOS Linux 7/8 和 CentOS Stream 8。
+
+先安装 Hysteria2 官方 systemd 服务；然后在公网服务器以 root 身份执行：
+
+```bash
+sudo -i
+curl -fsSLo /root/setup_alidns_acme_for_hysteria2_centos.sh \\
+  https://raw.githubusercontent.com/DeakeyTan/AliDNS-ACME/main/setup_alidns_acme_for_hysteria2_centos.sh
+bash -n /root/setup_alidns_acme_for_hysteria2_centos.sh
+bash /root/setup_alidns_acme_for_hysteria2_centos.sh
+```
+
+CentOS 版使用 `dnf` / `yum` 安装 `curl ca-certificates openssl cronie util-linux coreutils`，使用 `crond` 进行自动续期，并尝试通过 `restorecon` 恢复证书目录的 SELinux 默认上下文。证书仍安装于 `/etc/hysteria/certs/`，且保持与现有 NPS 和 Nginx 独立。
+
+**注意：** 脚本没有在真实 CentOS/RHEL 服务器进行端到端签发验证。若 SELinux 处于 Enforcing 模式，遇到服务无法读取证书的情况，需检查 `ausearch` 和 `ls -Z` 结果，不应通过关闭 SELinux 来绕过问题。AccessKey 会保存在 root 的 acme.sh 配置目录以支持无人值守续期。
